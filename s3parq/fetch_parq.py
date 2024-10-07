@@ -150,7 +150,7 @@ def get_max_partition_value(bucket: str, key: str, partition: str) -> any:
     return max([convert_type(val, partition_dtype) for val in partition_values])
 
 
-def fetch(bucket: str, key: str, filters: List[type(Filter)] = {}, parallel: bool = True, accept_not_s3parq: bool = True) -> pd.DataFrame:
+def fetch(bucket: str, key: str, filters: List[dict] = {}, parallel: bool = True, accept_not_s3parq: bool = True) -> pd.DataFrame:
     """ S3 Parquet to Dataframe Fetcher.
     This function handles the portion of work that will return a concatenated
     dataframe based on the partition filters of the specified dataset.
@@ -183,6 +183,11 @@ def fetch(bucket: str, key: str, filters: List[type(Filter)] = {}, parallel: boo
 
     _validate_filter_rules(filters)
     S3NamingHelper().validate_bucket_name(bucket)
+
+    # encode all the filters to make sure they match what comes back from s3
+    for filter in filters:
+        if filter["comparison"] == "==":
+            filter["values"] = [parse.quote(v) for v in filter["values"]]
 
     all_files = get_all_files_list(bucket, key)
 
@@ -461,7 +466,7 @@ def _get_partition_value_data_types(parsed_parts: dict, part_types: dict) -> dic
     return parsed_parts
 
 
-def _get_filtered_key_list(typed_parts: dict, filters: List[type(Filter)], key: str) -> List[str]:
+def _get_filtered_key_list(typed_parts: dict, filters: List[dict], key: str) -> List[str]:
     """ Create list of all "paths" to files after the filtered partitions
     are set ie all non-matching partitions are excluded.
 
@@ -598,8 +603,7 @@ def _repopulate_partitions(partition_string: str, partition_metadata: dict) -> t
 
     return partitions
 
-
-def _validate_filter_rules(filters: List[type(Filter)]) -> None:
+def _validate_filter_rules(filters: List[dict]) -> None:
     """ Validate that the filters are the correct format and follow basic
     comparison rules, otherwise throw a ValueError
 
@@ -628,7 +632,7 @@ def _validate_filter_rules(filters: List[type(Filter)]) -> None:
                 f"Comparison {f['comparison']} can only be used with one filter value.")
 
 
-def _validate_matching_filter_data_type(part_types, filters: List[type(Filter)]) -> None:
+def _validate_matching_filter_data_type(part_types, filters: List[dict]) -> None:
     """ Validate that the filters passed are matching to the partitions'
     listed datatypes, otherwise throw a ValueError.
     This includes validating comparisons too.
