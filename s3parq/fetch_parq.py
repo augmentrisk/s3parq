@@ -15,11 +15,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from .s3_naming_helper import S3NamingHelper
 
-# Filter
-# class Filter(NamedTuple):
-#    partition: str
-#    comparison: str
-#    values: List[any]
+from .parquet_path import ParquetPath
 
 Filter = {
     "partition": str,
@@ -184,45 +180,46 @@ def fetch(bucket: str, key: str, filters: List[dict] = {}, parallel: bool = True
     _validate_filter_rules(filters)
     S3NamingHelper().validate_bucket_name(bucket)
 
-    # encode all the filters to make sure they match what comes back from s3
-    for filter in filters:
-        if filter["comparison"] == "==":
-            filter["values"] = [parse.quote(v) for v in filter["values"]]
-
     all_files = get_all_files_list(bucket, key)
 
     if not all_files:
         logger.debug(f"No files present under : {key} :, returning empty DataFrame")
         return pd.DataFrame()
 
-    partition_metadata = _get_partitions_and_types(all_files[0], bucket)
+    existing_paths = [ParquetPath(file, _get_types(all_files[0], bucket)) for file in all_files]
 
-    if partition_metadata is None:
-        if accept_not_s3parq:
-            logger.info("Parquet files do not have S3Parq metadata, fetching anyways.")
-            return _get_filtered_data(bucket=bucket, paths=all_files, partition_metadata={},
-                              parallel=parallel)
-        else:
-            raise MissingS3ParqMetadata("Parquet files are missing s3parq metadata, enable 'accept_not_s3parq' if you'd like this to pass.")
+    #if partition_metadata is None:
+        #if accept_not_s3parq:
+            #logger.info("Parquet files do not have S3Parq metadata, fetching anyways.")
+            #return _get_filtered_data(bucket=bucket, paths=all_files, partition_metadata={},
+                              #parallel=parallel)
+        #else:
+            #raise MissingS3ParqMetadata("Parquet files are missing s3parq metadata, enable 'accept_not_s3parq' if you'd like this to pass.")
 
-    _validate_matching_filter_data_type(partition_metadata, filters)
+    # _validate_matching_filter_data_type(partition_metadata, filters)
+
+    breakpoint()
 
     # strip out the filenames (which we need)
     partition_values = _parse_partitions_and_values(all_files, key)
 
     typed_values = _get_partition_value_data_types(
         partition_values, partition_metadata)
-
+    logger.info("Partition values : %s", typed_values)
     # filtered_paths is a list of the S3 prefixes from which we want to load data
     filtered_paths = _get_filtered_key_list(typed_values, filters, key)
+    logger.info("Filtered paths : %s", filtered_paths)
+    logger.info("Fetching %s files from S3", len(filtered_paths))
 
-    files_to_load = []
+    # this should leverage boto resource now
+    # so
+    # 1. synthesize the paths with a single file example
+    # 2. use objects.filter to get the list of objects
+    # 3. use the list of objects to get the data
+    # how do we do gte, lte etc
 
-    for file in all_files:
-        for prefix in filtered_paths:
-            if file.startswith(prefix):
-                files_to_load.append(file)
-
+    files_to_load = _find_files_by_filtered_paths(filtered_paths, all_files)
+    breakpoint()
     # if there is no data matching the filters, return an empty DataFrame
     # with correct headers and type
     if len(files_to_load) < 1:
@@ -363,9 +360,44 @@ def get_all_files_list(bucket: str, key: str) -> list:
 
     return objects_in_bucket
 
+def _find_files_by_filtered_paths(filtered_paths: List[str], all_files: List[str]) -> List[str]:
+    """ Find all files that match the filtered paths"""
+    files_to_load = []
+    for file in all_files:
+        for prefix in filtered_paths:
+            if file.startswith(prefix):
+                files_to_load.append(file)
+    return files_to_load
+
+def _get_types(file_key:str, bucket:str) -> dict:
+    """get type callables for the partitions in the dataset"""
+    s3_client = boto3.client('s3')
+
+    first_file = s3_client.head_object(
+        Bucket=bucket,
+        Key=file_key
+    )
+
+    metadata = ast.literal_eval(first_file['Metadata'].get("partition_data_types", None))
+
+    for k, v in metadata.items():
+        if v in ['int', 'integer']:
+            metadata[k] = int
+        elif v in ['float','decimal']:
+            metadata[k] = float
+        elif v in ['datetime','date']:
+            metadata[k] = _coerce_datetime_partition
+        elif v in ['bool','boolean']:
+            metadata[k] = bool
+        else:
+            metadata[k] = str
+    return metadata
+
 
 def _get_partitions_and_types(first_file_key: str, bucket: str) -> dict:
-    """ Fetch a list of all the partitions actually there and their
+    """DEPRECATED: use _get_types
+
+    Fetch a list of all the partitions actually there and their
     datatypes. List may be different than passed list if not being used
     for filtering on.
     NOTE: This is pulled from the metadata. It is assumed that this package
@@ -501,9 +533,10 @@ def _get_filtered_key_list(typed_parts: dict, filters: List[dict], key: str) -> 
             part = matched_parts.popitem(last=False)
             new_filter_keys = list()
             for value in part[1]:
+                # needs urlencoding to match
                 mapped_keys = list(map(
                     (lambda x: str(x) +
-                     str(part[0]) + "=" + str(value) + "/"),
+                     parse.quote(str(part[0])) + "=" + parse.quote(str(value)) + "/"),
                     previous_fil_keys
                 ))
                 new_filter_keys = new_filter_keys + mapped_keys
