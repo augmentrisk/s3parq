@@ -1,4 +1,5 @@
 import boto3
+import numpy as np
 import dfmock
 import moto
 import pandas as pd
@@ -47,4 +48,48 @@ def test_end_to_end():
     assert fetched_df.shape == old_df.shape
     assert df_equal_by_set(fetched_df, old_df, old_df.columns)
     sorted_dfs_equal_by_pandas_testing(fetched_df, old_df)
+
+
+@moto.mock_aws
+def test_ms_format():
+    """tests SQL Server format with whitespaces"""
+    df = dfmock.DFMock(count=10000)
+    df.columns = {"String Options": {"option_count": 4, "option_type": "string"},
+                "int_options": {"option_count": 4, "option_type": "int"},
+                "datetime_options": {"option_count": 5, "option_type": "datetime"},
+                "float_options": {"option_count": 2, "option_type": "float"},
+                "metrics": "integer"
+                }
+
+
+    df.generate_dataframe()
+
+
+    s3_client = boto3.client('s3')
+    bucket_name = 'thistestbucket'
+    key = 'thisdataset'
+    s3_client.create_bucket(Bucket=bucket_name)
+
+    old_df = pd.DataFrame(df.dataframe)
+    # set the values to something MSSQL format
+    string_options = ["see no evil", "hear no evil", "speak no evil"]
+    old_df['String Options'] = np.random.choice(string_options, size=len(old_df))
+
+    # pub it
+    publish(
+        bucket=bucket_name,
+        key=key,
+        dataframe=old_df,
+        partitions=['String Options', 'datetime_options', 'float_options']
+    )
+
+    # go get it
+    fetched_df = fetch(
+        bucket=bucket_name,
+        key=key,
+        filters=[{'partition': 'String Options', 'comparison': '==', 'values': ['see no evil']}],
+        parallel=False
+    )
+    assert not fetched_df.empty
+    assert fetched_df.shape < old_df.shape
 
