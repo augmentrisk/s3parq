@@ -1,5 +1,14 @@
 from urllib import parse
+import operator
 
+OPS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    ">=": operator.ge,
+    "<=": operator.le,
+    ">": operator.gt,
+    "<": operator.lt
+}
 
 class ParquetPath:
     """parsed representation of a parquet path
@@ -22,3 +31,13 @@ class ParquetPath:
         for part in partition_pairs:
             path_parts[part] = self.parts_type_map[part](partition_pairs[part])
         return path_parts
+
+    def match(self, filter: dict) -> bool:
+        """is this path a match for the filter"""
+        partition = filter['partition']
+        comparison = OPS[filter['comparison']]
+        values = filter['values']
+        for value in values:
+            if comparison(self.path_parts[partition], value):
+                return True
+        return False

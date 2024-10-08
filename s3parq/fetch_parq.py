@@ -186,40 +186,34 @@ def fetch(bucket: str, key: str, filters: List[dict] = {}, parallel: bool = True
         logger.debug(f"No files present under : {key} :, returning empty DataFrame")
         return pd.DataFrame()
 
-    existing_paths = [ParquetPath(file, _get_types(all_files[0], bucket)) for file in all_files]
+    partition_metadata = _get_partitions_and_types(all_files[0], bucket)
+    if not partition_metadata:
+        if accept_not_s3parq:
+            logger.debug(f"Dataset not published with S3Parq, fetching without metadata")
+            return _get_filtered_data(bucket=bucket, paths=all_files, partition_metadata={}, parallel=parallel)
+        raise MissingS3ParqMetadata("Dataset not published with S3Parq, cannot fetch without metadata")
 
-    #if partition_metadata is None:
-        #if accept_not_s3parq:
-            #logger.info("Parquet files do not have S3Parq metadata, fetching anyways.")
-            #return _get_filtered_data(bucket=bucket, paths=all_files, partition_metadata={},
-                              #parallel=parallel)
-        #else:
-            #raise MissingS3ParqMetadata("Parquet files are missing s3parq metadata, enable 'accept_not_s3parq' if you'd like this to pass.")
+    paths = [ParquetPath(file, _get_types(all_files[0], bucket)) for file in all_files]
+
+    # get matching paths, filtering down
+    for filter in filters:
+        paths = [path for path in paths if path.match(filter)]
+
+
 
     # _validate_matching_filter_data_type(partition_metadata, filters)
 
-    breakpoint()
 
     # strip out the filenames (which we need)
-    partition_values = _parse_partitions_and_values(all_files, key)
+    #partition_values = _parse_partitions_and_values(all_files, key)
 
-    typed_values = _get_partition_value_data_types(
-        partition_values, partition_metadata)
-    logger.info("Partition values : %s", typed_values)
+    #typed_values = _get_partition_value_data_types(
+    #    partition_values, partition_metadata)
+    #logger.info("Partition values : %s", typed_values)
     # filtered_paths is a list of the S3 prefixes from which we want to load data
-    filtered_paths = _get_filtered_key_list(typed_values, filters, key)
-    logger.info("Filtered paths : %s", filtered_paths)
-    logger.info("Fetching %s files from S3", len(filtered_paths))
+    #filtered_paths = _get_filtered_key_list(typed_values, filters, key)
 
-    # this should leverage boto resource now
-    # so
-    # 1. synthesize the paths with a single file example
-    # 2. use objects.filter to get the list of objects
-    # 3. use the list of objects to get the data
-    # how do we do gte, lte etc
-
-    files_to_load = _find_files_by_filtered_paths(filtered_paths, all_files)
-    breakpoint()
+    files_to_load = [path.s3_path for path in paths]
     # if there is no data matching the filters, return an empty DataFrame
     # with correct headers and type
     if len(files_to_load) < 1:
@@ -379,7 +373,8 @@ def _get_types(file_key:str, bucket:str) -> dict:
     )
 
     metadata = ast.literal_eval(first_file['Metadata'].get("partition_data_types", None))
-
+    if not metadata:
+        return {}
     for k, v in metadata.items():
         if v in ['int', 'integer']:
             metadata[k] = int
